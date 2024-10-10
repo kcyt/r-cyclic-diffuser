@@ -292,37 +292,11 @@ class SetupCallback(Callback):
         self.lightning_config = lightning_config
         self.debug = debug
 
-
-    def on_exception(self, trainer, pl_module, exception):
-        if not self.debug:
+    def on_keyboard_interrupt(self, trainer, pl_module):
+        if not self.debug and trainer.global_rank == 0:
             rank_zero_print("Summoning checkpoint.")
-            ckpt_path = os.path.join(self.ckptdir, "final")
+            ckpt_path = os.path.join(self.ckptdir, "last.ckpt")
             trainer.save_checkpoint(ckpt_path)
-
-            # lightning deepspeed has saved a directory instead of a file
-            if trainer.global_rank == 0 and (not isinstance(trainer.strategy, pl.strategies.single_device.SingleDeviceStrategy) ):
-                save_path = ckpt_path
-                output_path = ckpt_path + ".ckpt"
-                convert_zero_checkpoint_to_fp32_state_dict(save_path, output_path)
-                shutil.rmtree(save_path)
-
-    def _convert_saved_weights_directory_into_ckpt(self, trainer, pl_module):
-        if trainer.global_rank == 0:
-            for f in os.listdir(self.ckptdir):
-                full_file_path = os.path.join(self.ckptdir, f)
-                if ('epoch' in f) and os.path.isdir(full_file_path):
-                    save_path = full_file_path
-                    output_path = full_file_path + ".ckpt"
-                    convert_zero_checkpoint_to_fp32_state_dict(save_path, output_path)
-                    shutil.rmtree(save_path)
-
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        self._convert_saved_weights_directory_into_ckpt(trainer, pl_module)
-        pl_module.increase_seed() # only used if set_sequential_conditioning_suboption_cyclicEval is set to True and we are actually training the model (i.e. moving between different epochs).
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        self._convert_saved_weights_directory_into_ckpt(trainer, pl_module)
 
 
 
@@ -361,10 +335,9 @@ class SetupCallback(Callback):
                     pass
 
 
-    def on_fit_start(self, trainer, pl_module):
+
+    def on_pretrain_routine_start(self, trainer, pl_module):
         self._routine_before_training(trainer, pl_module)
-
-
 
 
 class ImageLogger(Callback):
@@ -378,8 +351,8 @@ class ImageLogger(Callback):
         self.max_images = max_images
 
         self.logger_log_images = {
-            pl.loggers.TensorBoardLogger: self._testtube,
-        }
+                pl.loggers.TestTubeLogger: self._testtube,
+            }
 
         
         self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)] # E.g. if self.batch_freq == 1000, then self.log_steps = [1,2,4,8,16,32,64,128,256,512] 
@@ -519,8 +492,8 @@ class ImageLogger(Callback):
 
 
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx): # a pytorch lightning function
-        self._on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx): # a pytorch lightning function
+        self._on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx, dataloader_idx)
 
 
 
@@ -567,7 +540,7 @@ class CUDACallback(Callback):
 
     # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
     def on_train_epoch_start(self, trainer, pl_module):
-        trainer_root_gpu = trainer.strategy.root_device.index
+        trainer_root_gpu = trainer.root_gpu
 
         # Reset the memory use counter
         torch.cuda.reset_peak_memory_stats(trainer_root_gpu)
@@ -592,9 +565,9 @@ class CUDACallback(Callback):
             pass
 
 
-    def on_train_epoch_end(self, trainer, pl_module):
-        trainer_root_gpu = trainer.strategy.root_device.index
-        self._on_train_epoch_end(trainer_root_gpu, trainer, pl_module)
+    def on_train_epoch_end(self, trainer, pl_module, outputs):
+        trainer_root_gpu = trainer.root_gpu
+        self._on_train_epoch_end(trainer_root_gpu, trainer, pl_module, outputs)
 
 
 
@@ -778,7 +751,7 @@ if __name__ == "__main__":
 
 
         
-        trainer_config["accelerator"] = "gpu"
+        trainer_config["accelerator"] = "ddp"
         
         for k in nondefault_trainer_args(opt):
             trainer_config[k] = getattr(opt, k)
@@ -940,7 +913,7 @@ if __name__ == "__main__":
 
         }
 
-        default_logger_cfg = default_logger_cfgs["tensorboard"]
+        default_logger_cfg = default_logger_cfgs["testtube"]
 
         if "logger" in lightning_config:
             logger_cfg = lightning_config.logger
@@ -1026,21 +999,8 @@ if __name__ == "__main__":
         if not "plugins" in trainer_kwargs:
             trainer_kwargs["plugins"] = list()
         if not lightning_config.get("find_unused_parameters", True):
-            trainer_kwargs.pop("plugins")
-            
-            # No model sharding
-            #from pytorch_lightning.strategies.ddp import DDPStrategy
-            #trainer_kwargs["strategy"] = DDPStrategy(find_unused_parameters=False)
-
-
-            temp_ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
-
-            if temp_ngpu <= 1:
-                # Just use 1 gpu
-                trainer_kwargs["strategy"] = None
-            else:
-                # Model sharding using DeepSpeed.
-                trainer_kwargs["strategy"] = "deepspeed_stage_1" # "deepspeed_stage_2"
+            from pytorch_lightning.plugins import DDPPlugin
+            trainer_kwargs["plugins"].append(DDPPlugin(find_unused_parameters=False))
 
 
 
@@ -1090,17 +1050,11 @@ if __name__ == "__main__":
 
         # allow checkpointing via USR1
         def melk(*args, **kwargs):
-            rank_zero_print("Summoning checkpoint.")
-            ckpt_path = os.path.join(ckptdir, "final")
-            trainer.save_checkpoint(ckpt_path)
-
-            # lightning deepspeed has saved a directory instead of a file
-            if trainer.global_rank == 0 and (not isinstance(trainer.strategy, pl.strategies.single_device.SingleDeviceStrategy) ):
-                save_path = ckpt_path
-                output_path = ckpt_path + ".ckpt"
-                convert_zero_checkpoint_to_fp32_state_dict(save_path, output_path)
-                shutil.rmtree(save_path)
-
+                # run all checkpoint hooks
+                if trainer.global_rank == 0:
+                    rank_zero_print("Summoning checkpoint.")
+                    ckpt_path = os.path.join(ckptdir, "last.ckpt")
+                    trainer.save_checkpoint(ckpt_path)
 
         def divein(*args, **kwargs):
             if trainer.global_rank == 0:
