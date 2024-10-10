@@ -24,3 +24,9 @@ pip install -e taming-transformers/
 git clone https://github.com/openai/CLIP.git
 pip install -e CLIP/
 ```
+
+## 2. Download Required Model Weights
+
+Create a folder ```trained_trial_autoencoder_kl_32x32x4``` (i.e. ```r-cyclic-diffuser/trained_trial_autoencoder_kl_32x32x4```). Download ```latest.ckpt``` from ```https://entuedu-my.sharepoint.com/:u:/r/personal/kenn0042_e_ntu_edu_sg/Documents/latest.ckpt``` and place it inside the created folder. This is the model weights for the autoencoder.
+
+
