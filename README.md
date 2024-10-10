@@ -30,3 +30,6 @@ pip install -e CLIP/
 Create a folder ```trained_trial_autoencoder_kl_32x32x4``` (i.e. ```r-cyclic-diffuser/trained_trial_autoencoder_kl_32x32x4```). Download ```latest.ckpt``` from ```https://entuedu-my.sharepoint.com/:u:/r/personal/kenn0042_e_ntu_edu_sg/Documents/latest.ckpt``` and place it inside the created folder. This is the model weights for the autoencoder.
 
 
+## 3. Training Model
+
+```python main.py     -t     --base configs/rcyclic_config.yaml     --gpus 0,     --num_nodes 1     --seed 42    [--finetune_from XXXX.ckpt] ```
