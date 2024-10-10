@@ -319,7 +319,7 @@ class SetupCallback(Callback):
 
     def on_train_epoch_end(self, trainer, pl_module):
         self._convert_saved_weights_directory_into_ckpt(trainer, pl_module)
-        pl_module.increase_seed() # only used if own_sequential_conditioning_suboption_cyclicEval is set to True and we are actually training the model (i.e. moving between different epochs).
+        pl_module.increase_seed() # only used if set_sequential_conditioning_suboption_cyclicEval is set to True and we are actually training the model (i.e. moving between different epochs).
 
     def on_train_epoch_start(self, trainer, pl_module):
         self._convert_saved_weights_directory_into_ckpt(trainer, pl_module)
@@ -722,10 +722,10 @@ if __name__ == "__main__":
 
         config_model_params = config["model"]["params"]
 
-        own_smplx_conditioning = config_model_params.get("own_smplx_conditioning", False)
-        if own_smplx_conditioning:
-            own_smplx_conditioning_suboption_useBlendweights = config_model_params.get("own_smplx_conditioning_suboption_useBlendweights", False)
-            if own_smplx_conditioning_suboption_useBlendweights:
+        set_smplx_conditioning = config_model_params.get("set_smplx_conditioning", False)
+        if set_smplx_conditioning:
+            set_smplx_conditioning_suboption_useBlendweights = config_model_params.get("set_smplx_conditioning_suboption_useBlendweights", False)
+            if set_smplx_conditioning_suboption_useBlendweights:
                 config["model"]["params"]["unet_config"]["params"]["in_channels"] += 3*NUM_OF_BLENDWEIGHT_MAPS_TO_USE  
 
                 config["data"]["params"]["train"]["params"]["useBlendweights"] = True
@@ -738,20 +738,20 @@ if __name__ == "__main__":
 
 
 
-        own_sequential_conditioning = config_model_params.get("own_sequential_conditioning", False)
-        own_sequential_conditioning_suboption_useCrossAttention = config_model_params.get("own_sequential_conditioning_suboption_useCrossAttention", False)
-        own_sequential_conditioning_suboption_useSmplxToo = config_model_params.get("own_sequential_conditioning_suboption_useSmplxToo", False)
-        if (own_smplx_conditioning == False) and (own_sequential_conditioning_suboption_useSmplxToo == True):
-            raise Exception("Setting own_smplx_conditioning to be False and own_sequential_conditioning_suboption_useSmplxToo is True is Not properly implemented yet!") 
+        set_sequential_conditioning = config_model_params.get("set_sequential_conditioning", False)
+        set_sequential_conditioning_suboption_useCrossAttention = config_model_params.get("set_sequential_conditioning_suboption_useCrossAttention", False)
+        set_sequential_conditioning_suboption_useSmplx = config_model_params.get("set_sequential_conditioning_suboption_useSmplx", False)
+        if (set_smplx_conditioning == False) and (set_sequential_conditioning_suboption_useSmplx == True):
+            raise Exception("Setting set_smplx_conditioning to be False and set_sequential_conditioning_suboption_useSmplx is True is Not properly implemented yet!") 
 
 
-        if own_sequential_conditioning:
+        if set_sequential_conditioning:
             config["model"]["params"]["unet_config"]["params"]["in_channels"] += 8 # need to add 2 more embedded images, so 2*4=8 channels
             print("No. of in-channels in U-Net modified due to use of sequential conditioning!")
 
-            if own_sequential_conditioning_suboption_useSmplxToo:
+            if set_sequential_conditioning_suboption_useSmplx:
 
-                if own_smplx_conditioning_suboption_useBlendweights:
+                if set_smplx_conditioning_suboption_useBlendweights:
                     config["model"]["params"]["unet_config"]["params"]["in_channels"] += 3*(3*NUM_OF_BLENDWEIGHT_MAPS_TO_USE) # need to add 3 more embedded smplx blendweight images, so 3*(3*NUM_OF_BLENDWEIGHT_MAPS_TO_USE)= x channels
                 else:
                     config["model"]["params"]["unet_config"]["params"]["in_channels"] += 9 # need to add 3 more downsampled smplx images, so 3*3=9 channels
@@ -771,7 +771,7 @@ if __name__ == "__main__":
             print("Train and Validation Datasets changed to ThumanDatasetNovel due to use of sequential conditioning!")
 
 
-            if own_sequential_conditioning_suboption_useCrossAttention:
+            if set_sequential_conditioning_suboption_useCrossAttention:
                 config["model"]["params"]["unet_config"]["params"]["context_dim"] += 1536 # need to add 2 more CLIP-embedded images, so 2*768=1536 channels
                 print("No. of context_dim in U-Net modified due to use of cross attention in sequential conditioning!")
 

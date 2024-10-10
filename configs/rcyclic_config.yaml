@@ -1,0 +1,134 @@
+
+to_validate_the_images_only: False # for validation
+
+model:
+  base_learning_rate: 1.0e-04
+  target: ldm.models.diffusion.ddpm.LatentDiffusion
+  params:
+    set_no_view_dif_conditioning: True  
+    set_smplx_conditioning: False # Determine if smplx conditioning is used in sequential conditioning.
+    set_smplx_conditioning_suboption_useBlendweights: False # Determine if blendweight features is used in smplx conditioning.
+    set_sequential_conditioning: True  
+    set_sequential_conditioning_suboption_useCrossAttention: True  
+    set_sequential_conditioning_suboption_invert180Image: True # Laterally invert the 180 conditioning image to exploit the natural image alignment constraint.
+    set_sequential_conditioning_suboption_cyclicEval: False # Scores each sequence of images
+    set_sequential_conditioning_suboption_useSmplx: False # Default: False. Each RGB conditional will be accompanied with a SMPL-X equivalent. 
+    linear_start: 0.00085
+    linear_end: 0.0120
+    num_timesteps_cond: 1
+    log_every_t: 200
+    timesteps: 1000
+    first_stage_key: "image_target"
+    cond_stage_key: "image_cond"
+    image_size: 64  
+    channels: 4
+    cond_stage_trainable: false    
+    conditioning_key: hybrid
+    monitor: val/loss_simple  
+    scale_factor: 0.18215
+
+    scheduler_config: # 10000 warmup steps
+      target: ldm.lr_scheduler.LambdaLinearScheduler
+      params:
+        warm_up_steps: [ 100 ]
+        cycle_lengths: [ 10000000000000 ] # incredibly large number to prevent corner cases
+        f_start: [ 1.e-6 ]
+        f_max: [ 1. ]
+        f_min: [ 1. ]
+
+    unet_config:
+      target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+      params:
+        image_size: 32 # unused
+        in_channels: 8
+        out_channels: 4
+        model_channels: 320
+        attention_resolutions: [ 4, 2, 1 ]
+        num_res_blocks: 2
+        channel_mult: [ 1, 2, 4, 4 ]
+        num_heads: 8
+        use_spatial_transformer: True
+        transformer_depth: 1
+        context_dim: 768
+        use_checkpoint: True
+        legacy: False
+
+    first_stage_config:
+      target: ldm.models.autoencoder.AutoencoderKL
+      params:
+        embed_dim: 4
+        monitor: val/rec_loss
+        ddconfig:
+          double_z: true
+          z_channels: 4
+          resolution: 512  
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 4
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+        lossconfig:
+          target: torch.nn.Identity
+
+    cond_stage_config:
+      target: ldm.modules.encoders.modules.FrozenCLIPImageEmbedder
+
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 1 #2 #192
+    num_workers: 2 #8 # 16
+    #total_view: 36 #4
+    wrap: False
+    train:
+      target: None # set by main.py
+      params:
+        size: 512 
+    validation:
+      target: None  # set by main.py
+      params:
+        size: 512 
+
+
+lightning:
+  find_unused_parameters: false
+  metrics_over_trainsteps_checkpoint: True
+  modelcheckpoint:
+    params:
+      #every_n_train_steps: 189 #5000 # is affected by the value of 'accumulate_grad_batches' E.g. if accumulate_grad_batches == 4, then 4 train steps is equal to 1 train step.
+      every_n_epochs: 1
+      save_top_k: -1 # save the model weights every time 'modelcheckpoint' is called
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 3000 #5000 #100 #99999 #10 - decides how often to log images.
+        max_images: 32
+        increase_log_steps: False # Change to True to enable log_steps
+        log_first_step:  False
+        log_images_kwargs:
+          ddim_steps: 200 # either set to 30,40, or 200.
+          use_ema_scope: False
+          inpaint: False
+          plot_progressive_rows: False
+          plot_diffusion_rows: False
+          N: 32
+          unconditional_guidance_scale: 3.0
+          unconditional_guidance_label: [""]
+        #disabled: True
+        log_on_batch_idx: True
+        testtube_no_image_log: True 
+
+  trainer:
+    benchmark: True
+    #val_check_interval: 189 #300 #10000 # is affected by the value of 'accumulate_grad_batches'; Set to 1.0 to do validation after the end of each epoch.
+    check_val_every_n_epoch: 1 #9999 #1 # might not have enough GPU memory to support validation during training 
+    num_sanity_val_steps: 0
+    accumulate_grad_batches: 36 #36 #1
