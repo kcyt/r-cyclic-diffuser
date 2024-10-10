@@ -7,44 +7,26 @@ import copy
 from packaging import version
 import shutil
 
-
-if version.parse(torch.__version__) < version.parse('2.0.0'):
-    new_pytorch_version_3 = False
-    print("You are using pytorch 1 and its associated pytorch_lightning version.")
-else:
-    new_pytorch_version_3 = True 
-    print("You are using pytorch 2 and its associated pytorch_lightning version.")
-
-    from pytorch_lightning.utilities.deepspeed import convert_zero_checkpoint_to_fp32_state_dict
-
-
-
-
-import pytorch_lightning as pl
-
 from omegaconf import OmegaConf
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from torch.utils.data.dataloader import default_collate
 from functools import partial
 from PIL import Image
 
-
-
+# make sure you are using  pytorch 2 and its associated pytorch_lightning version.
+import pytorch_lightning as pl
+from pytorch_lightning.utilities.deepspeed import convert_zero_checkpoint_to_fp32_state_dict
 from pytorch_lightning.utilities.distributed import rank_zero_only
-
-
 from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
-
 from pytorch_lightning.utilities import rank_zero_info
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
 
 
-NUM_OF_BLENDWEIGHT_MAPS_TO_USE = 4 # (v1) uses 4, (v2) uses 2. This Constant is defined in main.py, ddpm.py, and thuman.py.
-
+NUM_OF_BLENDWEIGHT_MAPS_TO_USE = 4 
 
 
 @rank_zero_only
@@ -58,7 +40,6 @@ def modify_weights(w, scale = 1e-6, n=2):
     for i in range(n):
         new_w = torch.cat((new_w, extra_w.clone()), dim=1)
     return new_w
-
 
 def get_parser(**parser_kwargs):
     def str2bool(v):
@@ -311,46 +292,37 @@ class SetupCallback(Callback):
         self.lightning_config = lightning_config
         self.debug = debug
 
-    # this function is not called when new_pytorch_version_3 is True
-    def on_keyboard_interrupt(self, trainer, pl_module):
-        if not self.debug and trainer.global_rank == 0:
+
+    def on_exception(self, trainer, pl_module, exception):
+        if not self.debug:
             rank_zero_print("Summoning checkpoint.")
-            ckpt_path = os.path.join(self.ckptdir, "last.ckpt")
+            ckpt_path = os.path.join(self.ckptdir, "final")
             trainer.save_checkpoint(ckpt_path)
 
-    if new_pytorch_version_3:
-        def on_exception(self, trainer, pl_module, exception):
-            if not self.debug:
-                rank_zero_print("Summoning checkpoint.")
-                ckpt_path = os.path.join(self.ckptdir, "final")
-                trainer.save_checkpoint(ckpt_path)
+            # lightning deepspeed has saved a directory instead of a file
+            if trainer.global_rank == 0 and (not isinstance(trainer.strategy, pl.strategies.single_device.SingleDeviceStrategy) ):
+                save_path = ckpt_path
+                output_path = ckpt_path + ".ckpt"
+                convert_zero_checkpoint_to_fp32_state_dict(save_path, output_path)
+                shutil.rmtree(save_path)
 
-                # lightning deepspeed has saved a directory instead of a file
-                if trainer.global_rank == 0 and (not isinstance(trainer.strategy, pl.strategies.single_device.SingleDeviceStrategy) ):
-                    save_path = ckpt_path
-                    output_path = ckpt_path + ".ckpt"
+    def _convert_saved_weights_directory_into_ckpt(self, trainer, pl_module):
+        if trainer.global_rank == 0:
+            for f in os.listdir(self.ckptdir):
+                full_file_path = os.path.join(self.ckptdir, f)
+                if ('epoch' in f) and os.path.isdir(full_file_path):
+                    save_path = full_file_path
+                    output_path = full_file_path + ".ckpt"
                     convert_zero_checkpoint_to_fp32_state_dict(save_path, output_path)
                     shutil.rmtree(save_path)
 
-        def _convert_saved_weights_directory_into_ckpt(self, trainer, pl_module):
-            if trainer.global_rank == 0:
-                for f in os.listdir(self.ckptdir):
-                    full_file_path = os.path.join(self.ckptdir, f)
-                    if ('epoch' in f) and os.path.isdir(full_file_path):
-                        save_path = full_file_path
-                        output_path = full_file_path + ".ckpt"
-                        convert_zero_checkpoint_to_fp32_state_dict(save_path, output_path)
-                        shutil.rmtree(save_path)
 
+    def on_train_epoch_end(self, trainer, pl_module):
+        self._convert_saved_weights_directory_into_ckpt(trainer, pl_module)
+        pl_module.increase_seed() # only used if own_sequential_conditioning_suboption_cyclicEval is set to True and we are actually training the model (i.e. moving between different epochs).
 
-        def on_train_epoch_end(self, trainer, pl_module):
-            self._convert_saved_weights_directory_into_ckpt(trainer, pl_module)
-            pl_module.increase_seed() # only used if own_sequential_conditioning_suboption_cyclicEval is set to True and we are actually training the model (i.e. moving between different epochs).
-
-        def on_train_epoch_start(self, trainer, pl_module):
-            self._convert_saved_weights_directory_into_ckpt(trainer, pl_module)
-
-
+    def on_train_epoch_start(self, trainer, pl_module):
+        self._convert_saved_weights_directory_into_ckpt(trainer, pl_module)
 
 
 
@@ -389,13 +361,9 @@ class SetupCallback(Callback):
                     pass
 
 
-    if new_pytorch_version_3:
-        def on_fit_start(self, trainer, pl_module):
-            self._routine_before_training(trainer, pl_module)
+    def on_fit_start(self, trainer, pl_module):
+        self._routine_before_training(trainer, pl_module)
 
-    else:
-        def on_pretrain_routine_start(self, trainer, pl_module):
-            self._routine_before_training(trainer, pl_module)
 
 
 
@@ -403,20 +371,16 @@ class ImageLogger(Callback):
     def __init__(self, batch_frequency, max_images, clamp=True, increase_log_steps=True,
                  rescale=True, disabled=False, log_on_batch_idx=False, log_first_step=False,
                  log_images_kwargs=None, log_all_val=False, testtube_no_image_log=True, 
-                 to_validate_the_images_only=False, is_original_zero123=False, seed=0):
+                 to_validate_the_images_only=False, seed=0):
         super().__init__()
         self.rescale = rescale
         self.batch_freq = batch_frequency
         self.max_images = max_images
 
-        if new_pytorch_version_3:
-            self.logger_log_images = {
-                pl.loggers.TensorBoardLogger: self._testtube,
-            }
-        else:
-            self.logger_log_images = {
-                pl.loggers.TestTubeLogger: self._testtube,
-            }
+        self.logger_log_images = {
+            pl.loggers.TensorBoardLogger: self._testtube,
+        }
+
         
         self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)] # E.g. if self.batch_freq == 1000, then self.log_steps = [1,2,4,8,16,32,64,128,256,512] 
         if not increase_log_steps:
@@ -430,13 +394,11 @@ class ImageLogger(Callback):
 
         self.testtube_no_image_log = testtube_no_image_log
         self.to_validate_the_images_only = to_validate_the_images_only
-        self.is_original_zero123 = is_original_zero123
 
         self.seed = seed
 
         if self.to_validate_the_images_only:
-            print("modifying 'batch_frequency' and 'log_all_val' due to the use of 'to_validate_the_images_only' ")
-            self.batch_freq = 1 #300
+            self.batch_freq = 1  
             self.log_all_val = True 
 
     @rank_zero_only
@@ -504,12 +466,9 @@ class ImageLogger(Callback):
                 pl_module.eval()
 
 
-            if self.is_original_zero123 and self.to_validate_the_images_only:
-                batches_list = [ batch['90_degree'] , batch['180_degree'], batch['270_degree'] ]
-                angle_index = 0
-            else:
-                batches_list = [batch]
-                angle_index = -1
+
+            batches_list = [batch]
+            angle_index = -1
 
 
             for curr_batch in batches_list:
@@ -560,13 +519,8 @@ class ImageLogger(Callback):
 
 
 
-    if new_pytorch_version_3:
-        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx): # a pytorch lightning function
-            self._on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)
-
-    else:
-        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx): # a pytorch lightning function
-            self._on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx, dataloader_idx)
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx): # a pytorch lightning function
+        self._on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)
 
 
 
@@ -613,10 +567,7 @@ class CUDACallback(Callback):
 
     # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
     def on_train_epoch_start(self, trainer, pl_module):
-        if new_pytorch_version_3:
-            trainer_root_gpu = trainer.strategy.root_device.index
-        else:
-            trainer_root_gpu = trainer.root_gpu
+        trainer_root_gpu = trainer.strategy.root_device.index
 
         # Reset the memory use counter
         torch.cuda.reset_peak_memory_stats(trainer_root_gpu)
@@ -641,15 +592,9 @@ class CUDACallback(Callback):
             pass
 
 
-    if new_pytorch_version_3:
-        def on_train_epoch_end(self, trainer, pl_module):
-            trainer_root_gpu = trainer.strategy.root_device.index
-            self._on_train_epoch_end(trainer_root_gpu, trainer, pl_module)
-    else:
-        def on_train_epoch_end(self, trainer, pl_module, outputs):
-            trainer_root_gpu = trainer.root_gpu
-            self._on_train_epoch_end(trainer_root_gpu, trainer, pl_module, outputs)
-
+    def on_train_epoch_end(self, trainer, pl_module):
+        trainer_root_gpu = trainer.strategy.root_device.index
+        self._on_train_epoch_end(trainer_root_gpu, trainer, pl_module)
 
 
 
@@ -760,25 +705,11 @@ if __name__ == "__main__":
         config.lightning.callbacks.image_logger.params['seed'] = opt.seed
 
 
-        is_original_zero123 = config.get("is_original_zero123", False) 
-        config.lightning.callbacks.image_logger.params['is_original_zero123'] = is_original_zero123
-
         to_validate_the_images_only = config.get("to_validate_the_images_only", False) 
-        to_validate_the_images_only_suboption_useTestSet = config.get("to_validate_the_images_only_suboption_useTestSet", False)
         if to_validate_the_images_only:
-
-            if to_validate_the_images_only_suboption_useTestSet:
-                if is_original_zero123:
-                    config.data.params.validation.target = "ldm.data.zero123_thuman.Zero123ThumanDatasetTest"   
-                else:                
-                    config.data.params.validation.target = "ldm.data.thuman.ThumanDatasetNovelTest"
-                    config.data.params.validation.params.justFrontal = True
-            else:
-                if is_original_zero123:
-                    config.data.params.validation.target = "ldm.data.zero123_thuman.Zero123ThumanDatasetValidation"   
-                else:    
-                    config.data.params.validation.target = "ldm.data.thuman.ThumanDatasetNovelValidation"
-                    config.data.params.validation.params.justFrontal = True
+ 
+            config.data.params.validation.target = "ldm.data.thuman.ThumanDatasetNovelValidation"
+            config.data.params.validation.params.justFrontal = True
             
             config.lightning.trainer.num_sanity_val_steps = -1 
             config.lightning.callbacks.image_logger.params['to_validate_the_images_only'] = to_validate_the_images_only
@@ -847,11 +778,7 @@ if __name__ == "__main__":
 
 
         
-        # default to ddp
-        if new_pytorch_version_3:
-            trainer_config["accelerator"] = "gpu"
-        else:
-            trainer_config["accelerator"] = "ddp"
+        trainer_config["accelerator"] = "gpu"
         
         for k in nondefault_trainer_args(opt):
             trainer_config[k] = getattr(opt, k)
@@ -931,19 +858,7 @@ if __name__ == "__main__":
 
 
             # loading the trained autoencoder weights (imported from stable-diffusion)
-            if is_original_zero123:
-                if config["data"]["params"]["train"]["params"]["size"] == 256:
-                    if config["data"]["params"]["train"]["params"]["white_background"]:
-                        _load_path = "/home/astar/Documents/stable-diffusion/logs/trained_Zero123Benchmark_encoder_lowRes_whiteBackground/checkpoints/epoch=000007.ckpt" 
-                    else:
-                        _load_path = "/home/astar/Documents/stable-diffusion/logs/trained_Zero123Benchmark_encoder_lowRes/checkpoints/epoch=000006.ckpt"
-                else: 
-                    if config["data"]["params"]["train"]["params"]["white_background"]:
-                        _load_path = "/home/astar/Documents/stable-diffusion/logs/trained_Zero123Benchmark_encoder_whiteBackground/checkpoints/epoch=000002.ckpt" 
-                    else:
-                        _load_path = "/home/astar/Documents/stable-diffusion/logs/trained_Zero123Benchmark_encoder/checkpoints/epoch=000005.ckpt"
-            else: 
-                _load_path = "logs/trained_trial_autoencoder_kl_32x32x4/epoch=000014.ckpt"
+            _load_path = "trained_trial_autoencoder_kl_32x32x4/latest.ckpt"
 
             _load_state = torch.load(_load_path, map_location="cpu")
             if "state_dict" in _load_state:
@@ -983,14 +898,6 @@ if __name__ == "__main__":
 
                         old_state[input_key] = torch.nn.parameter.Parameter(input_weight)
 
-
-            if ('cc_projection.weight' in new_state.keys() ) and ('cc_projection.weight' not in old_state.keys() ):
-                _load_path = "105000.ckpt"
-                _load_state = torch.load(_load_path, map_location="cpu")
-                if "state_dict" in _load_state:
-                    _load_state = _load_state["state_dict"]
-                old_state['cc_projection.weight'] =  _load_state['cc_projection.weight']
-                old_state['cc_projection.bias'] =  _load_state['cc_projection.bias']
 
 
             m, u = model.load_state_dict(old_state, strict=False)
@@ -1033,10 +940,7 @@ if __name__ == "__main__":
 
         }
 
-        if new_pytorch_version_3:
-            default_logger_cfg = default_logger_cfgs["tensorboard"]
-        else:
-            default_logger_cfg = default_logger_cfgs["testtube"]
+        default_logger_cfg = default_logger_cfgs["tensorboard"]
 
         if "logger" in lightning_config:
             logger_cfg = lightning_config.logger
@@ -1122,27 +1026,23 @@ if __name__ == "__main__":
         if not "plugins" in trainer_kwargs:
             trainer_kwargs["plugins"] = list()
         if not lightning_config.get("find_unused_parameters", True):
-            if new_pytorch_version_3:
-                trainer_kwargs.pop("plugins")
-                
-                # No model sharding
-                #from pytorch_lightning.strategies.ddp import DDPStrategy
-                #trainer_kwargs["strategy"] = DDPStrategy(find_unused_parameters=False)
+            trainer_kwargs.pop("plugins")
+            
+            # No model sharding
+            #from pytorch_lightning.strategies.ddp import DDPStrategy
+            #trainer_kwargs["strategy"] = DDPStrategy(find_unused_parameters=False)
 
 
-                temp_ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
+            temp_ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
 
-                if temp_ngpu <= 1:
-                    # Just use 1 gpu
-                    trainer_kwargs["strategy"] = None
-                else:
-                    # Model sharding using DeepSpeed.
-                    trainer_kwargs["strategy"] = "deepspeed_stage_1" # "deepspeed_stage_2"
-
-
+            if temp_ngpu <= 1:
+                # Just use 1 gpu
+                trainer_kwargs["strategy"] = None
             else:
-                from pytorch_lightning.plugins import DDPPlugin
-                trainer_kwargs["plugins"].append(DDPPlugin(find_unused_parameters=False))
+                # Model sharding using DeepSpeed.
+                trainer_kwargs["strategy"] = "deepspeed_stage_1" # "deepspeed_stage_2"
+
+
 
 
 
@@ -1189,26 +1089,17 @@ if __name__ == "__main__":
 
 
         # allow checkpointing via USR1
-        if new_pytorch_version_3:
-            def melk(*args, **kwargs):
-                rank_zero_print("Summoning checkpoint.")
-                ckpt_path = os.path.join(ckptdir, "final")
-                trainer.save_checkpoint(ckpt_path)
+        def melk(*args, **kwargs):
+            rank_zero_print("Summoning checkpoint.")
+            ckpt_path = os.path.join(ckptdir, "final")
+            trainer.save_checkpoint(ckpt_path)
 
-                # lightning deepspeed has saved a directory instead of a file
-                if trainer.global_rank == 0 and (not isinstance(trainer.strategy, pl.strategies.single_device.SingleDeviceStrategy) ):
-                    save_path = ckpt_path
-                    output_path = ckpt_path + ".ckpt"
-                    convert_zero_checkpoint_to_fp32_state_dict(save_path, output_path)
-                    shutil.rmtree(save_path)
-        else:
-            def melk(*args, **kwargs):
-                # run all checkpoint hooks
-                if trainer.global_rank == 0:
-                    rank_zero_print("Summoning checkpoint.")
-                    ckpt_path = os.path.join(ckptdir, "last.ckpt")
-                    trainer.save_checkpoint(ckpt_path)
-
+            # lightning deepspeed has saved a directory instead of a file
+            if trainer.global_rank == 0 and (not isinstance(trainer.strategy, pl.strategies.single_device.SingleDeviceStrategy) ):
+                save_path = ckpt_path
+                output_path = ckpt_path + ".ckpt"
+                convert_zero_checkpoint_to_fp32_state_dict(save_path, output_path)
+                shutil.rmtree(save_path)
 
 
         def divein(*args, **kwargs):
