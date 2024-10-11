@@ -3,7 +3,7 @@ Official Implementation of R-Cyclic Diffuser (Accepted in CVPR 2024)
 
 Release Timeline (Our team is committed to releasing this project as soon as we can):
 
-* October 2024: Training Scripts (Current) *Next update: Instructions and scripts for Preparing THuman2.0 Dataset.
+* October 2024: Training Scripts (Current) *New update: Instructions and scripts for Preparing THuman2.0 Dataset released.
 
 * October - November 2024: Pre-trained Model and Testing Scripts
 
@@ -12,7 +12,7 @@ Release Timeline (Our team is committed to releasing this project as soon as we 
 
 
 ## 1. Installation
-Create a conda environment:
+Create a conda environment called ```rcyclic```:
 
 ```
 conda create -n rcyclic python=3.9
@@ -33,11 +33,13 @@ Create a folder ```trained_trial_autoencoder_kl_32x32x4``` (i.e. ```r-cyclic-dif
 
 Follow ```https://github.com/kcyt/IntegratedPIFu``` for instructions to render the images from THuman2.0 Dataset (Only need to render the RGB images). 
 
-Will update this section with more information soon.
+After rendering, set the ```prefix``` path in ```r-cyclic-diffuser/ldm/data/thuman.py``` to start training using THuman2.0 Dataset.
 
 ## 4. Training Model
 
-```python main.py     -t     --base configs/rcyclic_config.yaml     --gpus 0,     --num_nodes 1     --seed 42    [--finetune_from XXXX.ckpt] ```
+Run the following command in terminal:
+
+```python main.py     -t     --base configs/rcyclic_config.yaml     --gpus 0,     --num_nodes 1     --seed 0    [--finetune_from XXXX.ckpt] ```
 
 
 ##  Citation
